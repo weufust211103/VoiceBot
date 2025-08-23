@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord import app_commands
 import json
 import os
 from datetime import datetime
@@ -24,7 +24,8 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True  # For tracking voice changes
 intents.members = True  # For member info
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
 
 # In-memory tracking for join times (user_id: {channel_id: join_time})
 join_times = {}
@@ -35,6 +36,14 @@ data = load_data()
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
+    # Sync slash commands (replace GUILD_ID with your server ID for testing)
+    GUILD_ID = None  # Set to your guild ID (e.g., 123456789012345678) for guild-specific sync, or None for global
+    if GUILD_ID:
+        await tree.sync(guild=discord.Object(id=GUILD_ID))
+        print(f'Synced commands to guild {GUILD_ID}')
+    else:
+        await tree.sync()
+        print('Synced global commands')
     # Ensure all voice channels are in data
     for guild in bot.guilds:
         for channel in guild.voice_channels:
@@ -84,28 +93,28 @@ async def on_voice_state_update(member, before, after):
             data['channels'][channel_id] = {'name': after.channel.name, 'users': {}}
             save_data(data)
 
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def create_vc(ctx, *, name: str):
-    """Create a new voice channel."""
-    guild = ctx.guild
+@tree.command(name="create_vc", description="Create a new voice channel.")
+@app_commands.checks.has_permissions(manage_channels=True)
+@app_commands.describe(name="The name of the voice channel to create")
+async def create_vc(interaction: discord.Interaction, name: str):
+    guild = interaction.guild
     channel = await guild.create_voice_channel(name)
-    await ctx.send(f'Created voice channel: {channel.mention}')
     # Add to data
     channel_id = str(channel.id)
     data['channels'][channel_id] = {'name': name, 'users': {}}
     save_data(data)
+    await interaction.response.send_message(f'Created voice channel: {channel.mention}')
 
 @create_vc.error
-async def create_vc_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("You need 'Manage Channels' permission.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Usage: !create_vc <name>")
+async def create_vc_error(interaction: discord.Interaction, error):
+    if isinstance(error, app_commands.MissingPermissions):
+        await interaction.response.send_message("You need 'Manage Channels' permission.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Error creating voice channel.", ephemeral=True)
 
-@bot.command()
-async def stats(ctx, *, channel_name: str):
-    """Show EXP and time stats for a voice channel."""
+@tree.command(name="stats", description="Show EXP and time stats for a voice channel.")
+@app_commands.describe(channel_name="The name of the voice channel")
+async def stats(interaction: discord.Interaction, channel_name: str):
     found = False
     for channel_id, channel_data in data['channels'].items():
         if channel_data['name'].lower() == channel_name.lower():
@@ -124,16 +133,23 @@ async def stats(ctx, *, channel_name: str):
                         value=f"EXP: {user_data['exp']} | Time: {time_min} min",
                         inline=False
                     )
-            await ctx.send(embed=embed)
+            await interaction.response.send_message(embed=embed)
             break
     
     if not found:
-        await ctx.send(f"No voice channel found with name '{channel_name}'.")
+        await interaction.response.send_message(f"No voice channel found with name '{channel_name}'.", ephemeral=True)
 
-@stats.error
-async def stats_error(ctx, error):
-    if isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Usage: !stats <channel_name>")
+@tree.command(name="help", description="List all available commands.")
+async def help(interaction: discord.Interaction):
+    embed = discord.Embed(title="Bot Commands", color=discord.Color.blue())
+    commands = await tree.fetch_commands()
+    for cmd in commands:
+        embed.add_field(
+            name=f"/{cmd.name}",
+            value=cmd.description or "No description available.",
+            inline=False
+        )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # Run the bot
 bot.run('MTQwODgzNjc1OTg4NTk3NTU2NA.G0GXhW.Cr2jCziFEy6603mh-yT0ZIS5HknbVkHzGyoM7s')
