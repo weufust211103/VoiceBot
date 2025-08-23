@@ -1,11 +1,9 @@
 import discord
 from discord import app_commands
-import asyncio
+import os
 from player_manager import PlayerManager
 from poker_table import PokerTable
-from poker_bot import PokerGame
 from dotenv import load_dotenv
-import os
 from discord import Embed
 from datetime import datetime
 from poker_room import PokerRoom, RoomSettings
@@ -13,30 +11,48 @@ from poker_room import PokerRoom, RoomSettings
 # Load environment variables
 load_dotenv()
 
+# Bot setup with required intents
 intents = discord.Intents.default()
 intents.members = True
 intents.voice_states = True
 intents.message_content = True
+intents.guilds = True  # Add this intent
+
+# Initialize bot
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
 
-# Get admin ID from environment variables
+# Global variables
 ADMIN_ID = int(os.getenv('ADMIN_ID'))
+player_manager = PlayerManager()
+poker_table = PokerTable(bot)
+games = {}
+active_rooms = {}
+room_id_map = {}
 
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
 
-player_manager = PlayerManager()
-poker_table = PokerTable(bot)
-
-games = {}
-active_rooms = {}
-room_id_map = {}  # Maps room IDs to channel IDs
-
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user}')
-    await tree.sync()
+    print(f'====== Bot Status ======')
+    print(f'Logged in as: {bot.user.name}')
+    print(f'Bot ID: {bot.user.id}')
+    print(f'Connected to {len(bot.guilds)} servers')
+    print(f'Active rooms: {len(active_rooms)}')
+    print(f'Discord.py version: {discord.__version__}')
+    print(f'=====================')
+    
+    try:
+        await tree.sync()
+        print('Command tree synced!')
+    except Exception as e:
+        print(f'Error syncing commands: {e}')
+
+@tree.command(name="ping", description="Check if the bot is running")
+async def ping(interaction: discord.Interaction):
+    latency = round(bot.latency * 1000)
+    await interaction.response.send_message(f"Pong! Latency: {latency}ms")
 
 @tree.command(name="start_poker", description="Start a poker game in a new voice channel (max 6 players).")
 async def start_poker(interaction: discord.Interaction):
@@ -507,3 +523,9 @@ async def raise_bet(interaction: discord.Interaction, amount: int):
         )
     except ValueError as e:
         await interaction.response.send_message(str(e))
+
+if __name__ == "__main__":
+    TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+    if not TOKEN:
+        raise ValueError("No Discord token found in .env file")
+    bot.run(TOKEN.strip())  # Add strip() to remove any whitespace
