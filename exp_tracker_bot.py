@@ -2,7 +2,7 @@ import discord
 from discord import app_commands
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 # File for storing data
 DATA_FILE = 'data.json'
@@ -37,13 +37,20 @@ data = load_data()
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
     # Sync slash commands (replace GUILD_ID with your server ID for testing)
-    GUILD_ID = None  # Set to your guild ID (e.g., 123456789012345678) for guild-specific sync, or None for global
-    if GUILD_ID:
-        await tree.sync(guild=discord.Object(id=GUILD_ID))
-        print(f'Synced commands to guild {GUILD_ID}')
-    else:
-        await tree.sync()
-        print('Synced global commands')
+    GUILD_ID = 774316666095009812  # Set to your guild ID for guild-specific sync, or None for global
+    try:
+        if GUILD_ID:
+            guild = discord.Object(id=GUILD_ID)
+            await tree.sync(guild=guild)
+            print(f'Successfully synced commands to guild {GUILD_ID}')
+        else:
+            await tree.sync()
+            print('Successfully synced global commands')
+        # List registered commands for debugging
+        commands = await tree.fetch_commands(guild=discord.Object(id=GUILD_ID) if GUILD_ID else None)
+        print(f'Registered commands: {[cmd.name for cmd in commands]}')
+    except Exception as e:
+        print(f'Error syncing commands: {e}')
     # Ensure all voice channels are in data
     for guild in bot.guilds:
         for channel in guild.voice_channels:
@@ -57,7 +64,7 @@ async def on_voice_state_update(member, before, after):
     if member.bot:
         return  # Ignore bots
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     user_id = str(member.id)
 
     # User left a channel
@@ -98,7 +105,16 @@ async def on_voice_state_update(member, before, after):
 @app_commands.describe(name="The name of the voice channel to create")
 async def create_vc(interaction: discord.Interaction, name: str):
     guild = interaction.guild
-    channel = await guild.create_voice_channel(name)
+    #target_category_id = 1394670392953798716
+    target_category_id = 869053206599184434
+    target_category = guild.get_channel(target_category_id)
+
+    if not target_category or not isinstance(target_category, discord.CategoryChannel):
+        await interaction.response.send_message("The specified category could not be found or is not a category.", ephemeral=True)
+        return
+
+    # Place the channel under the specified category
+    channel = await guild.create_voice_channel(name, category=target_category, position=len(target_category.channels))
     # Add to data
     channel_id = str(channel.id)
     data['channels'][channel_id] = {'name': name, 'users': {}}
