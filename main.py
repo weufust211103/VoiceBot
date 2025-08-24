@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from discord import Embed
 from datetime import datetime
 from poker_room import PokerRoom, RoomSettings
+from poker_actions import Action
+from typing import Optional, Literal
 
 # Load environment variables
 load_dotenv()
@@ -38,16 +40,20 @@ async def on_ready():
     print(f'====== Bot Status ======')
     print(f'Logged in as: {bot.user.name}')
     print(f'Bot ID: {bot.user.id}')
+    
+    # Force sync all commands
+    print("Syncing commands...")
+    try:
+        synced = await tree.sync()
+        print(f"Synced {len(synced)} command(s)")
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
+    
     print(f'Connected to {len(bot.guilds)} servers')
     print(f'Active rooms: {len(active_rooms)}')
     print(f'Discord.py version: {discord.__version__}')
     print(f'=====================')
     
-    try:
-        await tree.sync()
-        print('Command tree synced!')
-    except Exception as e:
-        print(f'Error syncing commands: {e}')
 
 @tree.command(name="ping", description="Check if the bot is running")
 async def ping(interaction: discord.Interaction):
@@ -449,80 +455,113 @@ async def start_game(interaction: discord.Interaction):
     
     if len(room.seated_players) < 2:
         return await interaction.response.send_message("Need at least 2 players to start!")
-    
-    # Start new hand
-    room.start_new_hand()
+
+    # Set room as active and start new hand
+    room.active = True
+    await room.start_new_hand()
     positions = room.get_positions()
     
     # Create status embed
-    embed = Embed(title="🎮 New Hand Started!", color=discord.Color.blue())
-    embed.add_field(
-        name="Dealer", 
-        value=positions["dealer"].mention, 
-        inline=True
+    embed = discord.Embed(
+        title="🎮 New Hand Started!",
+        description="The game has begun!",
+        color=discord.Color.green()
     )
-    embed.add_field(
-        name="Small Blind", 
-        value=f"{positions['sb'].mention} ({room.settings.small_blind})", 
-        inline=True
-    )
-    embed.add_field(
-        name="Big Blind", 
-        value=f"{positions['bb'].mention} ({room.settings.big_blind})", 
-        inline=True
-    )
-    
+
+    # Add dealer position
+    if "dealer" in positions:
+        embed.add_field(
+            name="Dealer", 
+            value=positions["dealer"].mention, 
+            inline=True
+        )
+
+    # Add small blind position if exists
+    if "sb" in positions:
+        embed.add_field(
+            name="Small Blind", 
+            value=f"{positions['sb'].mention} ({room.settings.small_blind})", 
+            inline=True
+        )
+
+    # Add big blind position if exists
+    if "bb" in positions:
+        embed.add_field(
+            name="Big Blind", 
+            value=f"{positions['bb'].mention} ({room.settings.big_blind})", 
+            inline=True
+        )
+
+    # Get next player to act
     next_player = room.get_next_to_act()
-    embed.add_field(
-        name="Next to Act", 
-        value=f"{next_player.mention}", 
-        inline=False
-    )
+    if next_player:
+        embed.add_field(
+            name="Next to Act", 
+            value=next_player.mention, 
+            inline=False
+        )
     
     await interaction.response.send_message(embed=embed)
 
-@tree.command(name="call", description="Call the current bet")
-async def call(interaction: discord.Interaction):
+@tree.command()
+@app_commands.describe(
+    action="Choose your action (check, call, bet, raise, or fold)",
+    amount="Amount for bet/raise (if applicable)"
+)
+async def action(
+    interaction: discord.Interaction,
+    action: Literal["check", "call", "bet", "raise", "fold"],
+    amount: Optional[int] = None
+):
     if interaction.channel.id not in active_rooms:
-        return await interaction.response.send_message("No active poker room!")
-        
+        return await interaction.response.send_message("❌ No active poker room!", ephemeral=True)
+    
     room = active_rooms[interaction.channel.id]
     if not room.active:
-        return await interaction.response.send_message("Game hasn't started!")
-        
-    if interaction.user != room.get_next_to_act():
-        return await interaction.response.send_message("It's not your turn!")
-        
+        return await interaction.response.send_message("❌ Game hasn't started!", ephemeral=True)
+    
+    current_player = room.get_next_to_act()
+    if interaction.user != current_player:
+        return await interaction.response.send_message("❌ It's not your turn!", ephemeral=True)
+    
     try:
-        await room.handle_call(interaction.user)
-        call_amount = room.betting_round.current_bet
-        await interaction.response.send_message(
-            f"{interaction.user.mention} calls {call_amount}\n"
-            f"Pot: {room.betting_round.pot}"
+        action_result = None
+        if action == "check":
+            action_result = await room.handle_check(interaction.user)
+        elif action == "call":
+            action_result = await room.handle_call(interaction.user)
+        elif action == "bet":
+            if amount is None:
+                return await interaction.response.send_message("❌ You must specify an amount for bet!", ephemeral=True)
+            action_result = await room.handle_bet(interaction.user, amount)
+        elif action == "raise":
+            if amount is None:
+                return await interaction.response.send_message("❌ You must specify an amount for raise!", ephemeral=True)
+            action_result = await room.handle_raise(interaction.user, amount)
+        elif action == "fold":
+            action_result = await room.handle_fold(interaction.user)
+        
+        # Create action embed
+        embed = discord.Embed(
+            title="Player Action",
+            description=f"{interaction.user.mention} chose to {action}",
+            color=discord.Color.blue()
         )
+        
+        if amount:
+            embed.add_field(name="Amount", value=str(amount), inline=True)
+        
+        embed.add_field(name="Pot", value=str(room.betting_state.pot), inline=True)
+        
+        # Get next player
+        next_player = room.get_next_to_act()
+        if next_player:
+            embed.add_field(name="Next to Act", value=next_player.mention, inline=False)
+        
+        await interaction.response.send_message(embed=embed)
+        
     except ValueError as e:
-        await interaction.response.send_message(str(e))
-
-@tree.command(name="raise", description="Raise the current bet")
-async def raise_bet(interaction: discord.Interaction, amount: int):
-    if interaction.channel.id not in active_rooms:
-        return await interaction.response.send_message("No active poker room!")
-        
-    room = active_rooms[interaction.channel.id]
-    if not room.active:
-        return await interaction.response.send_message("Game hasn't started!")
-        
-    if interaction.user != room.get_next_to_act():
-        return await interaction.response.send_message("It's not your turn!")
-        
-    try:
-        await room.handle_raise(interaction.user, amount)
-        await interaction.response.send_message(
-            f"{interaction.user.mention} raises to {amount}\n"
-            f"Pot: {room.betting_round.pot}"
-        )
-    except ValueError as e:
-        await interaction.response.send_message(str(e))
+        await interaction.response.send_message(f"❌ {str(e)}", ephemeral=True)
 
 if __name__ == "__main__":
     TOKEN = os.getenv('DISCORD_BOT_TOKEN')
